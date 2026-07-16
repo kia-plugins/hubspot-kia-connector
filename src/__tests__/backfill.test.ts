@@ -80,6 +80,36 @@ describe('backfill', () => {
     expect(wm.companies).toBe('2026-01-01T00:00:00.000Z'); // preserved, not restamped
   });
 
+  it('checkpoints straight to live when the last type (emails) finishes its final page', async () => {
+    const { session } = mkSession();
+    const client = stubClient();
+    const cursor: Extract<HubSpotCursor, { phase: 'backfill' }> = {
+      phase: 'backfill',
+      step: 'emails',
+      after: null,
+      watermarks: {
+        companies: '2026-01-01T00:00:00.000Z',
+        contacts: '2026-01-01T00:00:00.000Z',
+        deals: '2026-01-01T00:00:00.000Z',
+        tickets: '2026-01-01T00:00:00.000Z',
+        notes: '2026-01-01T00:00:00.000Z',
+        calls: '2026-01-01T00:00:00.000Z',
+        meetings: '2026-01-01T00:00:00.000Z',
+        tasks: '2026-01-01T00:00:00.000Z',
+      },
+      backfillStartedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const batches = await drain(backfill(client as never, session, cursor, ctx));
+    // one batch carrying the emails page, then the terminal empty live batch
+    expect(batches).toHaveLength(2);
+    const emailsBatch = batches[0];
+    expect((emailsBatch.items[0] as { kind: string }).kind).toBe('emails');
+    // must be an exact-resume live cursor, NOT a backfill cursor pointing back at emails
+    expect(emailsBatch.cursor.phase).toBe('live');
+    const wm = (emailsBatch.cursor as Extract<HubSpotCursor, { phase: 'live' }>).watermarks;
+    for (const t of ALL_TYPES) expect(typeof wm[t]).toBe('string');
+  });
+
   it('stops yielding on abort', async () => {
     const { session, ac } = mkSession();
     const gen = backfill(stubClient() as never, session, null, ctx);

@@ -77,15 +77,18 @@ export async function* backfill(
 
       after = page.paging?.next?.after ?? null;
       if (!after) watermarks[step] = startedAt;
+      const isLastType = stepIdx === ALL_TYPES.length - 1;
       const next: HubSpotCursor = after
         ? { phase: 'backfill', step, after, watermarks: { ...watermarks }, backfillStartedAt: startedAt }
-        : {
-            phase: 'backfill',
-            step: ALL_TYPES[stepIdx + 1] ?? step,
-            after: null,
-            watermarks: { ...watermarks },
-            backfillStartedAt: startedAt,
-          };
+        : isLastType
+          ? { phase: 'live', watermarks: { ...watermarks } as Record<TypeKey, string> }
+          : {
+              phase: 'backfill',
+              step: ALL_TYPES[stepIdx + 1] ?? step,
+              after: null,
+              watermarks: { ...watermarks },
+              backfillStartedAt: startedAt,
+            };
       yield { phase: 'backfill', items, cursor: structuredClone(next) };
       if (!after) break;
     }
