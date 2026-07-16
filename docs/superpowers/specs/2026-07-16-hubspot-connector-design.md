@@ -77,9 +77,9 @@ HubSpot **Private App** paste-token flow (`auth: 'password'`):
 3. Verify via `GET /account-info/v3/details`; on 403 (scope-gated on some
    tiers) fall back to `GET /crm/v3/objects/contacts?limit=1`. Auth failure →
    clear error message in the wizard.
-4. Return `{ identifier, config }`: identifier = portal domain (fallback
-   `portal-{portalId}`); config stores `{ portalId }` — non-secret, needed for
-   deep links. The platform vaults the token; `pull` reads it back via
+4. Return `{ identifier, config }`: identifier = `portal-{portalId}` (the
+   API's `uiDomain` is the generic app domain, not portal-specific); config
+   stores `{ portalId }` — non-secret, needed for deep links. The platform vaults the token; `pull` reads it back via
    `session.credentials().password`.
 
 ## Document model
