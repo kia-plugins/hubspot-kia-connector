@@ -100,6 +100,7 @@ function engagementDoc(
     metadata.direction = p(record, 'hs_email_direction');
     metadata.from = headers.from;
     metadata.to = headers.to;
+    metadata.status = p(record, 'hs_email_status');
   } else if (kind === 'calls') {
     body = htmlToText(p(record, 'hs_call_body') ?? '');
     title = p(record, 'hs_call_title') ?? `Call — ${p(record, 'hs_timestamp') ?? record.id}`;

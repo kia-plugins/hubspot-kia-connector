@@ -38,6 +38,7 @@ describe('renderItem: email', () => {
           hs_email_text: 'Sounds good, see attached.',
           hs_email_html: '<p>Sounds good</p>',
           hs_email_direction: 'INCOMING_EMAIL',
+          hs_email_status: 'SENT',
           hs_email_headers: JSON.stringify({ from: { email: 'jane@acme.com', firstName: 'Jane' }, to: [{ email: 'me@us.co' }] }),
           hs_timestamp: '2026-03-03T09:00:00Z',
         },
@@ -52,6 +53,7 @@ describe('renderItem: email', () => {
     expect(doc.metadata.direction).toBe('INCOMING_EMAIL');
     expect(doc.metadata.from).toBe('jane@acme.com');
     expect(doc.metadata.to).toEqual(['me@us.co']);
+    expect(doc.metadata.status).toBe('SENT');
     expect(doc.parent).toEqual({ externalId: '88', type: 'hubspot.deal' });
   });
 
