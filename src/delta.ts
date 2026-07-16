@@ -22,6 +22,9 @@ import {
 export const DELTA_REQUEST_BUDGET = 60;
 /** Search indexing lags writes; 5 minutes of overlap re-covers the boundary. */
 export const OVERLAP_MS = 5 * 60_000;
+/** Calls held back from the live-type searches so the archived sweep — the
+ *  only deletion channel — always gets a shot even under sustained churn. */
+export const SWEEP_RESERVE = 10;
 /** HubSpot search refuses paging past 10k results — re-window before that. */
 const SEARCH_PAGE_CAP = 9_900;
 const PAGE_LIMIT = 100;
@@ -67,19 +70,20 @@ export async function* delta(
   ctx: RenderContext,
 ): AsyncGenerator<Batch<HubSpotCursor, HubSpotItem>> {
   const watermarks = { ...cursor.watermarks };
-  const budgetLeft = () => DELTA_REQUEST_BUDGET - client.requestCount;
+  const startCount = client.requestCount;
+  const budgetLeft = () => DELTA_REQUEST_BUDGET - (client.requestCount - startCount);
   const order = [...ALL_TYPES].sort((a, b) => (watermarks[a] < watermarks[b] ? -1 : 1));
 
   for (const step of order) {
     if (session.signal.aborted) return;
-    if (budgetLeft() <= 0) break;
+    if (budgetLeft() <= SWEEP_RESERVE) break;
     const prop = LAST_MODIFIED_PROP[step];
     let sinceMs = Date.parse(watermarks[step]) - OVERLAP_MS;
     let after: string | undefined;
 
     for (;;) {
       if (session.signal.aborted) return;
-      if (budgetLeft() <= 0) break;
+      if (budgetLeft() <= SWEEP_RESERVE) break;
 
       const page = await client.request<SearchEnvelope>('POST', `/crm/v3/objects/${step}/search`, {
         filterGroups: [{ filters: [{ propertyName: prop, operator: 'GTE', value: String(sinceMs) }] }],
@@ -104,6 +108,10 @@ export async function* delta(
         const lm = record.properties[prop];
         if (lm && lm > maxSeen) maxSeen = lm;
       }
+      // An abort mid-fetchAttachmentItems can truncate the file set for the
+      // last record in this page — never commit an advanced watermark/cursor
+      // over that loss; the whole page is re-fetched next tick instead.
+      if (session.signal.aborted) return;
       watermarks[step] = maxSeen;
 
       yield {

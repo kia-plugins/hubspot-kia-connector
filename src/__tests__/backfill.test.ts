@@ -140,6 +140,33 @@ describe('backfill', () => {
     const kinds = noteBatch.items.map((i) => (i as { kind: string }).kind);
     expect(kinds).toEqual(['notes', 'file']); // file doc rides the SAME batch as its parent
   });
+
+  it('never yields a page whose attachment fetch was truncated by abort mid-page', async () => {
+    const { session, ac } = mkSession();
+    const client = stubClient();
+    const base = client.request.bind(client);
+    // note has two attachments; the fetch for the first one aborts mid-flight,
+    // so fetchAttachmentItems returns only a partial file set for this record.
+    client.request = (async <T>(m: 'GET' | 'POST', pathname: string): Promise<T> => {
+      if (pathname.startsWith('/crm/v3/objects/notes')) {
+        return { results: [{ id: 'n1', properties: { hs_attachment_ids: 'f1;f2' } }] } as T;
+      }
+      if (pathname === '/files/v3/files/f1') {
+        ac.abort();
+        return { id: 'f1', name: 'a', extension: 'txt', size: 3 } as T;
+      }
+      if (pathname === '/files/v3/files/f1/signed-url') return { url: 'https://s/f1' } as T;
+      return base(m, pathname) as Promise<T>;
+    }) as typeof client.request;
+    client.download = async () => ({ bytes: new Uint8Array([1]), mime: 'text/plain' });
+
+    const batches = await drain(backfill(client as never, session, null, ctx));
+    // no batch should carry the notes record or its (partial) attachment file
+    expect(batches.some((b) => b.items.some((i) => (i as { kind: string }).kind === 'notes'))).toBe(false);
+    expect(batches.some((b) => b.items.some((i) => (i as { kind: string }).kind === 'file'))).toBe(false);
+    // and the generator must not have advanced/committed a cursor past notes
+    expect(batches.some((b) => b.phase === 'live')).toBe(false);
+  });
 });
 
 describe('assocFromRecord', () => {

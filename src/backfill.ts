@@ -74,6 +74,10 @@ export async function* backfill(
           items.push(...(await fetchAttachmentItems(client, session, record, DOC_TYPE[step])));
         }
       }
+      // An abort mid-fetchAttachmentItems can truncate the file set for the
+      // last record in this page — never commit an advanced cursor over that
+      // loss; the whole page is re-fetched next tick instead.
+      if (session.signal.aborted) return;
 
       after = page.paging?.next?.after ?? null;
       if (!after) watermarks[step] = startedAt;

@@ -89,6 +89,14 @@ describe('delta', () => {
     expect(client.requestCount).toBeLessThanOrEqual(DELTA_REQUEST_BUDGET + 5); // in-flight page + assoc reads may finish
   });
 
+  it('budget is unaffected by requests already made on the client before delta started', async () => {
+    const client = stubClient((_m, pathname) => (pathname.endsWith('/search') ? emptySearch : emptyList));
+    client.requestCount = 55; // simulate pull-time lookups (e.g. fetchRenderContext) already spent on this client
+    await drain(delta(client as never, session, liveCursor(), ctx));
+    const searches = client.calls.filter((c) => c.pathname.endsWith('/search'));
+    expect(searches).toHaveLength(ALL_TYPES.length); // every type still gets searched
+  });
+
   it('re-windows instead of paging past the 10k search cap', async () => {
     let searchCalls = 0;
     const client = stubClient((_m, pathname, body) => {
@@ -114,6 +122,23 @@ describe('delta', () => {
     });
     await drain(delta(client as never, session, liveCursor(), ctx));
     expect(searchCalls).toBe(2);
+  });
+
+  it('reserves a floor of budget for the archived sweep under sustained churn', async () => {
+    const client = stubClient((_m, pathname) => {
+      if (pathname.endsWith('/search')) {
+        return {
+          results: Array.from({ length: 100 }, (_, i) => ({ id: `x${i}`, properties: { hs_lastmodifieddate: '2026-07-02T00:00:00.000Z' } })),
+          paging: { next: { after: '100' } },
+          total: 20000,
+        };
+      }
+      if (pathname.includes('/associations/')) return { results: [] };
+      return { results: [] }; // archived sweep page — empty, ends immediately
+    });
+    await drain(delta(client as never, session, liveCursor(), ctx));
+    const sweepCalls = client.calls.filter((c) => c.pathname.includes('archived=true'));
+    expect(sweepCalls.length).toBeGreaterThan(0);
   });
 });
 
