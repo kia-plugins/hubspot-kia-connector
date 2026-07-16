@@ -74,7 +74,7 @@ export type HubSpotItem =
       filename: string;
       mime: string;
       size: number;
-      /** null when the file exceeds MAX_FILE_BYTES or download failed. */
+      /** File content; null when the file exceeds MAX_FILE_BYTES (rendered as extraction_status 'too_large'). Download failures are logged and the item skipped upstream. */
       bytes: Uint8Array | null;
       parent: ExternalRef;
       createdAt: string | null;
