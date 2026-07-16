@@ -127,12 +127,70 @@ export async function* delta(
   yield* archivedSweep(client, session, watermarks, cursor.archiveSweep, budgetLeft);
 }
 
-// Task 10 replaces this stub with the real archived-listing sweep.
-// eslint-disable-next-line require-yield, @typescript-eslint/no-unused-vars
+/**
+ * Deletion channel: HubSpot search excludes archived records, and a full
+ * reconcile() listing of a large portal is thousands of requests per cycle —
+ * so instead each tick pages the (small) archived=true listing per type,
+ * emitting Batch.deletions. Round-robin position persists in
+ * cursor.archiveSweep and clears after a full pass. Archived engagements also
+ * delete their attachment file docs (ids still readable on the archived
+ * record). GDPR hard-deletes never appear here — documented limitation.
+ */
 async function* archivedSweep(
   client: HubSpotClient,
   session: Session,
   watermarks: Record<TypeKey, string>,
   sweep: LiveCursor['archiveSweep'],
   budgetLeft: () => number,
-): AsyncGenerator<Batch<HubSpotCursor, HubSpotItem>> {}
+): AsyncGenerator<Batch<HubSpotCursor, HubSpotItem>> {
+  let idx = sweep ? Math.max(0, ALL_TYPES.indexOf(sweep.step)) : 0;
+  let after: string | null = sweep?.after ?? null;
+
+  for (; idx < ALL_TYPES.length; idx++) {
+    const step = ALL_TYPES[idx];
+    for (;;) {
+      if (session.signal.aborted) return;
+      if (budgetLeft() <= 0) {
+        // Persist the resume point; nothing else changes this cursor.
+        yield {
+          phase: 'live',
+          items: [],
+          cursor: structuredClone({ phase: 'live', watermarks, archiveSweep: { step, after } } as HubSpotCursor),
+        };
+        return;
+      }
+      const params = new URLSearchParams({
+        limit: '100',
+        archived: 'true',
+        properties: 'hs_attachment_ids',
+      });
+      if (after) params.set('after', after);
+      const page = await client.request<SearchEnvelope>('GET', `/crm/v3/objects/${step}?${params.toString()}`);
+
+      const deletions = (page.results ?? []).flatMap((r: HubSpotRecord) => {
+        const refs = [{ externalId: r.id, type: DOC_TYPE[step] }];
+        for (const fileId of (r.properties?.hs_attachment_ids ?? '').split(';').map((s) => s.trim()).filter(Boolean)) {
+          refs.push({ externalId: fileId, type: 'file' });
+        }
+        return refs;
+      });
+
+      after = page.paging?.next?.after ?? null;
+      const nextSweep = after
+        ? { step, after }
+        : idx + 1 < ALL_TYPES.length
+          ? { step: ALL_TYPES[idx + 1], after: null }
+          : undefined;
+
+      if (deletions.length > 0 || nextSweep === undefined) {
+        yield {
+          phase: 'live',
+          items: [],
+          deletions,
+          cursor: structuredClone({ phase: 'live', watermarks, ...(nextSweep ? { archiveSweep: nextSweep } : {}) } as HubSpotCursor),
+        };
+      }
+      if (!after) break;
+    }
+  }
+}
