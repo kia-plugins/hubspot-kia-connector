@@ -74,9 +74,11 @@ HubSpot **Private App** paste-token flow (`auth: 'password'`):
    block. Exact scope names are confirmed against HubSpot's scope picker
    during implementation; the wizard text is the single place they appear.
 2. Local shape check: token must match `^pat-`.
-3. Verify via `GET /account-info/v3/details`; on 403 (scope-gated on some
-   tiers) fall back to `GET /crm/v3/objects/contacts?limit=1`. Auth failure →
-   clear error message in the wizard.
+3. Verify via `GET /account-info/v3/details`. This endpoint is mandatory —
+   the identifier needs its `portalId`, which no other read endpoint returns —
+   so `account-info.security.read` is part of the wizard's required scope
+   list, and a 403 produces a clear error naming the missing scope. Auth
+   failure → clear error message in the wizard.
 4. Return `{ identifier, config }`: identifier = `portal-{portalId}` (the
    API's `uiDomain` is the generic app domain, not portal-specific); config
    stores `{ portalId }` — non-secret, needed for deep links. The platform vaults the token; `pull` reads it back via
