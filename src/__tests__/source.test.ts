@@ -1,10 +1,5 @@
-import {
-  SourceAuthError,
-  type AuthChannel,
-  type Document,
-  type HostFor,
-  type Session,
-} from '@kiagent/connector-sdk';
+import type { AuthChannel, Document, HostFor, Session } from '@kiagent/connector-sdk';
+import { SourceAuthError } from '@kiagent/connector-sdk';
 import { createHubSpotSource } from '../source';
 
 const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));

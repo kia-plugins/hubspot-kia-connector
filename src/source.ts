@@ -3,14 +3,8 @@ import { backfill } from './backfill';
 import { HubSpotClient, type HubSpotClientDeps, type NetFetch } from './client';
 import { delta } from './delta';
 import { renderItem } from './docs';
-import {
-  SourceAuthError,
-  type AuthChannel,
-  type Document,
-  type HostFor,
-  type Session,
-  type Source,
-} from '@kiagent/connector-sdk';
+import type { AuthChannel, Document, HostFor, Session, Source } from '@kiagent/connector-sdk';
+import { SourceAuthError } from '@kiagent/connector-sdk';
 import { fetchRenderContext } from './lookups';
 import { ALL_TYPES, DOC_TYPE, type HubSpotCursor, type HubSpotItem } from './types';
 
