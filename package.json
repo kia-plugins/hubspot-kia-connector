@@ -1,6 +1,6 @@
 {
   "name": "hubspot-kia-connector",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "HubSpot connector for KIAgent (extension platform)",
   "files": [
