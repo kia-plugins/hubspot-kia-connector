@@ -70,8 +70,14 @@ describe('HubSpotClient.request', () => {
       expect(e).toBeInstanceOf(HubSpotApiError);
       expect((e as HubSpotApiError).httpStatus).toBe(401);
       expect(isAuthError(e)).toBe(true);
+      // Source-taxonomy contract: the engine reads the `code` property to
+      // commit needsReauth — 401/403 must carry it, other statuses must not.
+      expect((e as HubSpotApiError).code).toBe('auth');
     }
     expect(isAuthError(new Error('nope'))).toBe(false);
+    expect(new HubSpotApiError(403, 'MISSING_SCOPES', 'no scope').code).toBe('auth');
+    expect(new HubSpotApiError(404, 'NOT_FOUND', 'gone').code).toBeUndefined();
+    expect(new HubSpotApiError(429, 'RATE_LIMIT', 'slow down').code).toBeUndefined();
   });
 
   it('POSTs a JSON body', async () => {

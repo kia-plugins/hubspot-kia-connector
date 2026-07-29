@@ -4,6 +4,7 @@ import { HubSpotClient, type HubSpotClientDeps, type NetFetch } from './client';
 import { delta } from './delta';
 import { renderItem } from './docs';
 import type { AuthChannel, Document, HostFor, Session, Source } from './kiagent-contracts';
+import { SourceAuthError } from './kiagent-source-errors';
 import { fetchRenderContext } from './lookups';
 import { ALL_TYPES, DOC_TYPE, type HubSpotCursor, type HubSpotItem } from './types';
 
@@ -24,7 +25,7 @@ export const REQUIRED_SCOPES = [
 async function requireToken(session: Session): Promise<string> {
   const creds = await session.credentials();
   const token = creds?.password;
-  if (!token) throw new Error('no HubSpot credentials — reconnect the account');
+  if (!token) throw new SourceAuthError('no HubSpot credentials — reconnect the account');
   return token;
 }
 

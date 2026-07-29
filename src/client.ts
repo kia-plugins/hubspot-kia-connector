@@ -18,6 +18,11 @@ interface HostResponse {
 }
 
 export class HubSpotApiError extends Error {
+  /** Source-taxonomy code the engine keys on: 401 = bad/revoked token,
+   *  403 = missing scope — both need the user to fix the Private App, so
+   *  both classify as 'auth' (needsReauth) instead of burning retries. */
+  readonly code?: 'auth';
+
   constructor(
     public httpStatus: number,
     public category: string,
@@ -25,6 +30,7 @@ export class HubSpotApiError extends Error {
   ) {
     super(`hubspot ${category}: ${message}`);
     this.name = 'HubSpotApiError';
+    if (httpStatus === 401 || httpStatus === 403) this.code = 'auth';
   }
 }
 

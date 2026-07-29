@@ -1,4 +1,5 @@
 import type { AuthChannel, Document, HostFor, Session } from '../kiagent-contracts';
+import { SourceAuthError } from '../kiagent-source-errors';
 import { createHubSpotSource } from '../source';
 
 const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
@@ -77,6 +78,20 @@ describe('pull dispatch', () => {
     await expect(gen[Symbol.asyncIterator]().next()).rejects.toThrow(/credentials/);
   });
 
+  it('classifies missing credentials as a source-taxonomy auth error (needsReauth)', async () => {
+    const src = createHubSpotSource(makeHost(() => ({ results: [] })), clock);
+    const gen = src.pull(session(false), null);
+    try {
+      await gen[Symbol.asyncIterator]().next();
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(SourceAuthError);
+      expect(e).toBeInstanceOf(Error);
+      expect((e as SourceAuthError).code).toBe('auth');
+      expect((e as Error).message).toBe('no HubSpot credentials — reconnect the account');
+    }
+  });
+
   it('null cursor → backfill batches then live', async () => {
     const src = createHubSpotSource(makeHost(() => ({ results: [] })), clock);
     const phases: string[] = [];
@@ -110,5 +125,22 @@ describe('fetchBytes', () => {
     expect(
       await src.fetchBytes!({ credentials: async () => ({ password: 'pat-x' }), signal: new AbortController().signal, log: () => {}, account: { config: {} } } as unknown as Session, doc),
     ).toBe(null);
+  });
+
+  it('classifies missing credentials as a source-taxonomy auth error (needsReauth)', async () => {
+    const src = createHubSpotSource(makeHost(() => ({})), clock);
+    const doc = { type: 'file', metadata: { hubspot_file_id: 'f1' } } as unknown as Document;
+    try {
+      await src.fetchBytes!(
+        { credentials: async () => ({ password: undefined }), signal: new AbortController().signal, log: () => {}, account: { config: {} } } as unknown as Session,
+        doc,
+      );
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(SourceAuthError);
+      expect(e).toBeInstanceOf(Error);
+      expect((e as SourceAuthError).code).toBe('auth');
+      expect((e as Error).message).toBe('no HubSpot credentials — reconnect the account');
+    }
   });
 });
