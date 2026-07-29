@@ -1,5 +1,5 @@
 import { assocFromRecord, backfill } from '../backfill';
-import type { Batch, Session } from '../kiagent-contracts';
+import type { Batch, Session } from '@kiagent/connector-sdk';
 import type { HubSpotCursor, HubSpotItem, RenderContext } from '../types';
 import { ALL_TYPES } from '../types';
 

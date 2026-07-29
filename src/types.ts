@@ -1,4 +1,4 @@
-import type { ExternalRef } from './kiagent-contracts';
+import type { ExternalRef } from '@kiagent/connector-sdk';
 
 export const OBJECT_TYPES = ['companies', 'contacts', 'deals', 'tickets'] as const;
 export const ENGAGEMENT_TYPES = ['notes', 'calls', 'meetings', 'tasks', 'emails'] as const;

@@ -1,4 +1,4 @@
-import type { DocumentInput, ExternalRef } from './kiagent-contracts';
+import type { DocumentInput, ExternalRef } from '@kiagent/connector-sdk';
 import { ownerLabel } from './lookups';
 import { htmlToText, propLines, truncate } from './render';
 import {

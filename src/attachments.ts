@@ -1,5 +1,5 @@
 import type { HubSpotClient } from './client';
-import type { Session } from './kiagent-contracts';
+import type { Session } from '@kiagent/connector-sdk';
 import { MAX_FILE_BYTES } from './docs';
 import type { HubSpotItem, HubSpotRecord } from './types';
 

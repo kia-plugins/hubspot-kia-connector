@@ -1,5 +1,5 @@
 import { batchReadAssociations, delta, DELTA_REQUEST_BUDGET, OVERLAP_MS } from '../delta';
-import type { Batch, Session } from '../kiagent-contracts';
+import type { Batch, Session } from '@kiagent/connector-sdk';
 import { ALL_TYPES, type HubSpotCursor, type HubSpotItem, type RenderContext, type TypeKey } from '../types';
 
 const ctx: RenderContext = { portalId: '1', owners: {}, dealStages: {}, ticketStages: {}, customProps: {} };

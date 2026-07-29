@@ -1,5 +1,5 @@
 import { renderItem } from '../docs';
-import type { DocumentInput } from '../kiagent-contracts';
+import type { DocumentInput } from '@kiagent/connector-sdk';
 import { ctx } from '../testing/fixtures';
 import type { HubSpotItem } from '../types';
 

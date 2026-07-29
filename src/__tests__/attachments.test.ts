@@ -1,5 +1,5 @@
 import { fetchAttachmentItems, signedUrl } from '../attachments';
-import type { Session } from '../kiagent-contracts';
+import type { Session } from '@kiagent/connector-sdk';
 
 const session = {
   signal: new AbortController().signal,

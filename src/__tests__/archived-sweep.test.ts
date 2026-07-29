@@ -1,5 +1,5 @@
 import { delta } from '../delta';
-import type { Batch, Session } from '../kiagent-contracts';
+import type { Batch, Session } from '@kiagent/connector-sdk';
 import { ALL_TYPES, type HubSpotCursor, type HubSpotItem, type TypeKey, type RenderContext } from '../types';
 
 const ctx: RenderContext = { portalId: '1', owners: {}, dealStages: {}, ticketStages: {}, customProps: {} };

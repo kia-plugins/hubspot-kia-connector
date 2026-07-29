@@ -1,6 +1,6 @@
 import { fetchAttachmentItems } from './attachments';
 import type { HubSpotClient } from './client';
-import type { Batch, Session } from './kiagent-contracts';
+import type { Batch, Session } from '@kiagent/connector-sdk';
 import { propsFor } from './properties';
 import {
   ALL_TYPES,
