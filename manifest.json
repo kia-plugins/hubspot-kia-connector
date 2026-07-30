@@ -2,7 +2,7 @@
   "id": "kia.hubspot",
   "name": "HubSpot",
   "version": "0.1.3",
-  "engine": "^1.2.0",
+  "engine": ">=1.2.0 <3.0.0",
   "entry": "dist/index.js",
   "caps": [
     "net"
@@ -10,7 +10,8 @@
   "contributes": {
     "sources": [
       "hubspot"
-    ]
+    ],
+    "senders": []
   },
   "icon": "icon.png"
 }
