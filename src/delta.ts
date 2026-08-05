@@ -103,7 +103,7 @@ export async function* delta(
         if (session.signal.aborted) return;
         items.push({ kind: step, record, assoc: assocMap[record.id] ?? {}, ctx });
         if (isEngagement(step) && record.properties.hs_attachment_ids) {
-          items.push(...(await fetchAttachmentItems(client, session, record, DOC_TYPE[step])));
+          items.push(...(await fetchAttachmentItems(client, session, record, DOC_TYPE[step], ctx.portalId)));
         }
         const lm = record.properties[prop];
         if (lm && lm > maxSeen) maxSeen = lm;

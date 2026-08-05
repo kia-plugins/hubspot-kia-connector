@@ -76,6 +76,8 @@ export type HubSpotItem =
       size: number;
       /** File content; null when the file exceeds MAX_FILE_BYTES (rendered as extraction_status 'too_large'). Download failures are logged and the item skipped upstream. */
       bytes: Uint8Array | null;
+      /** Carried from the pull's RenderContext so the file doc can deep-link into the portal. */
+      portalId: string;
       parent: ExternalRef;
       createdAt: string | null;
     };

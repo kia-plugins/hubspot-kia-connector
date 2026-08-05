@@ -25,6 +25,7 @@ export async function fetchAttachmentItems(
   session: Session,
   record: HubSpotRecord,
   parentDocType: string,
+  portalId: string,
 ): Promise<HubSpotItem[]> {
   const ids = (record.properties.hs_attachment_ids ?? '').split(';').map((s) => s.trim()).filter(Boolean);
   const out: HubSpotItem[] = [];
@@ -48,6 +49,7 @@ export async function fetchAttachmentItems(
         mime,
         size,
         bytes,
+        portalId,
         parent: { externalId: record.id, type: parentDocType },
         createdAt: record.properties.hs_timestamp ?? null,
       });

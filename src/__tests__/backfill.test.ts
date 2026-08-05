@@ -139,6 +139,8 @@ describe('backfill', () => {
     const noteBatch = batches.find((b) => b.items.some((i) => (i as { kind: string }).kind === 'notes'))!;
     const kinds = noteBatch.items.map((i) => (i as { kind: string }).kind);
     expect(kinds).toEqual(['notes', 'file']); // file doc rides the SAME batch as its parent
+    // the render context's portal id reaches the file item — that's what makes its deep link real
+    expect((noteBatch.items[1] as { portalId: string }).portalId).toBe(ctx.portalId);
   });
 
   it('never yields a page whose attachment fetch was truncated by abort mid-page', async () => {

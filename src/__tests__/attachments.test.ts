@@ -31,11 +31,13 @@ describe('fetchAttachmentItems', () => {
       session,
       { id: '9002', properties: { hs_attachment_ids: 'f1', hs_timestamp: '2026-03-03T09:00:00Z' } },
       'hubspot.email',
+      '123',
     );
     expect(items).toHaveLength(1);
     const f = items[0] as Extract<(typeof items)[0], { kind: 'file' }>;
     expect(f.kind).toBe('file');
     expect(f.fileId).toBe('f1');
+    expect(f.portalId).toBe('123');
     expect(f.filename).toBe('proposal.pdf');
     expect(f.mime).toBe('application/pdf');
     expect(Array.from(f.bytes!)).toEqual([7]);
@@ -49,6 +51,7 @@ describe('fetchAttachmentItems', () => {
       session,
       { id: '1', properties: { hs_attachment_ids: 'f2;f3' } },
       'hubspot.note',
+      '123',
     );
     expect(items).toHaveLength(1); // f3 skipped entirely
     const f = items[0] as Extract<(typeof items)[0], { kind: 'file' }>;
@@ -58,7 +61,7 @@ describe('fetchAttachmentItems', () => {
   });
 
   it('returns [] when there are no attachment ids', async () => {
-    expect(await fetchAttachmentItems(stubClient() as never, session, { id: '1', properties: {} }, 'hubspot.note')).toEqual([]);
+    expect(await fetchAttachmentItems(stubClient() as never, session, { id: '1', properties: {} }, 'hubspot.note', '123')).toEqual([]);
   });
 });
 

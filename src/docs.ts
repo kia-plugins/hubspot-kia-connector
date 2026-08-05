@@ -17,6 +17,16 @@ export function recordUrl(ctx: RenderContext, objectType: ObjectTypeKey, id: str
   return `https://app.hubspot.com/contacts/${ctx.portalId}/record/${OBJECT_TYPE_ID[objectType]}/${id}`;
 }
 
+/**
+ * Attachments live in the files tool as PRIVATE files, so the file object's own
+ * `url` 404s and its signed-url expires — neither is storable. The portal's file
+ * preview page is the stable deep link: it needs nothing but the portal and file
+ * ids, and it resolves for anyone signed into the account.
+ */
+export function filePreviewUrl(portalId: string, fileId: string): string {
+  return `https://app.hubspot.com/file-preview/${portalId}/file/${fileId}/`;
+}
+
 /** Engagements parent onto their most specific associated object. */
 const PARENT_PRIORITY: ObjectTypeKey[] = ['contacts', 'deals', 'tickets', 'companies'];
 
@@ -248,6 +258,7 @@ export function renderItem(item: HubSpotItem): DocumentInput | DocumentInput[] |
       title: item.filename,
       markdown: null,
       ...(item.bytes ? { binary: { bytes: item.bytes, mime: item.mime, filename: item.filename } } : {}),
+      url: filePreviewUrl(item.portalId, item.fileId),
       metadata: {
         hubspot_file_id: item.fileId,
         size: item.size,

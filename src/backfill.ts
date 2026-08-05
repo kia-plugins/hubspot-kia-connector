@@ -71,7 +71,7 @@ export async function* backfill(
         const assoc = assocFromRecord(record);
         items.push({ kind: step, record, assoc, ctx });
         if (isEngagement(step) && record.properties.hs_attachment_ids) {
-          items.push(...(await fetchAttachmentItems(client, session, record, DOC_TYPE[step])));
+          items.push(...(await fetchAttachmentItems(client, session, record, DOC_TYPE[step], ctx.portalId)));
         }
       }
       // An abort mid-fetchAttachmentItems can truncate the file set for the

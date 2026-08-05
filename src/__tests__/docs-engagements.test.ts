@@ -132,12 +132,14 @@ describe('renderItem: file', () => {
       mime: 'application/pdf',
       size: 1234,
       bytes: new Uint8Array([1, 2]),
+      portalId: '123',
       parent: { externalId: '9002', type: 'hubspot.email' },
       createdAt: '2026-03-03T09:00:00Z',
     });
     expect(doc.type).toBe('file');
     expect(doc.externalId).toBe('f1');
     expect(doc.title).toBe('proposal.pdf');
+    expect(doc.url).toBe('https://app.hubspot.com/file-preview/123/file/f1/');
     expect(doc.markdown).toBe(null);
     expect(doc.binary).toEqual({ bytes: new Uint8Array([1, 2]), mime: 'application/pdf', filename: 'proposal.pdf' });
     expect(doc.parent).toEqual({ externalId: '9002', type: 'hubspot.email' });
@@ -152,10 +154,13 @@ describe('renderItem: file', () => {
       mime: 'video/quicktime',
       size: 99_999_999,
       bytes: null,
+      portalId: '123',
       parent: { externalId: '9001', type: 'hubspot.note' },
       createdAt: null,
     });
     expect(doc.binary).toBeUndefined();
     expect(doc.metadata.extraction_status).toBe('too_large');
+    // an unextractable file still deep-links into the portal
+    expect(doc.url).toBe('https://app.hubspot.com/file-preview/123/file/f2/');
   });
 });
