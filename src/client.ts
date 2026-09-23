@@ -1,4 +1,6 @@
-export type NetFetch = (url: string, init?: unknown) => Promise<unknown>;
+// The host's own net.fetch type (PluginNet['fetch']), via the SDK.
+import type { NetFetch } from '@kiagent/connector-sdk/http';
+export type { NetFetch };
 
 export const HUBSPOT_API_BASE = 'https://api.hubapi.com';
 /** Private-app burst limit is ≥100 req/10 s and search is capped at 5 req/s;
