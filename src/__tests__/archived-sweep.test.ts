@@ -1,3 +1,4 @@
+import { HubSpotApiError } from '../client';
 import { delta } from '../delta';
 import type { Batch, Session } from '@kiagent/connector-sdk';
 import { ALL_TYPES, type HubSpotCursor, type HubSpotItem, type TypeKey, type RenderContext } from '../types';
@@ -84,5 +85,79 @@ describe('archivedSweep', () => {
       return c.archiveSweep?.step === 'tasks' && c.archiveSweep.after === 'T2';
     });
     expect(carried).toBe(true);
+  });
+
+  /** A client whose archived listing of `failing` throws `err`. */
+  function failingClient(failing: TypeKey, err: Error, archivedByType: Partial<Record<TypeKey, unknown>> = {}) {
+    const client = stubClient(archivedByType);
+    const base = client.request.bind(client);
+    client.request = (async <T>(m: 'GET' | 'POST', pathname: string): Promise<T> => {
+      if (pathname.includes(`/objects/${failing}?`) && pathname.includes('archived=true')) {
+        client.requestCount += 1;
+        client.calls.push(pathname);
+        throw err;
+      }
+      return base(m, pathname) as Promise<T>;
+    }) as typeof client.request;
+    return client;
+  }
+  const unsupported = () =>
+    new HubSpotApiError(
+      400,
+      'VALIDATION_ERROR',
+      'Paging through deleted objects is not yet supported for object type 0-47 (MEETING_EVENT)',
+    );
+  const sweepCursor = (b: Batch<HubSpotCursor, HubSpotItem>) =>
+    (b.cursor as Extract<HubSpotCursor, { phase: 'live' }>).archiveSweep;
+
+  it('skips a type HubSpot cannot list archived, sweeps the rest and completes the pass', async () => {
+    const client = failingClient('meetings', unsupported(), {
+      tasks: { results: [{ id: 't1', properties: {} }] },
+      emails: { results: [{ id: 'e1', properties: {} }] },
+    });
+    const batches = await drain(delta(client as never, session, liveCursor({ step: 'meetings', after: null }), ctx));
+    const sweepCalls = client.calls.filter((c) => c.includes('archived=true'));
+    expect(sweepCalls.filter((c) => c.includes('/objects/meetings?'))).toHaveLength(1);
+    expect(sweepCalls.some((c) => c.includes('/objects/tasks?'))).toBe(true);
+    expect(sweepCalls.some((c) => c.includes('/objects/emails?'))).toBe(true);
+    const dels = batches.flatMap((b) => b.deletions ?? []);
+    expect(dels).toContainEqual({ externalId: 't1', type: 'hubspot.task' });
+    expect(dels).toContainEqual({ externalId: 'e1', type: 'hubspot.email' });
+    // The skip itself persists the next type, so a budget cut right after
+    // it never resumes on the unsupported type again.
+    expect(batches.map(sweepCursor)).toContainEqual({ step: 'tasks', after: null });
+    expect(sweepCursor(batches[batches.length - 1])).toBeUndefined();
+  });
+
+  it('ends the pass when the unsupported type is the last one swept', async () => {
+    const last = ALL_TYPES[ALL_TYPES.length - 1];
+    const client = failingClient(last, unsupported());
+    const batches = await drain(delta(client as never, session, liveCursor({ step: last, after: null }), ctx));
+    expect(sweepCursor(batches[batches.length - 1])).toBeUndefined();
+  });
+
+  it('drops the pager when skipping mid-type, so the next type starts from its first page', async () => {
+    const client = failingClient('meetings', unsupported());
+    await drain(delta(client as never, session, liveCursor({ step: 'meetings', after: 'M9' }), ctx));
+    const tasksCall = client.calls.find((c) => c.includes('/objects/tasks?') && c.includes('archived=true'));
+    expect(tasksCall).toBeDefined();
+    expect(tasksCall).not.toContain('after=');
+  });
+
+  it('still fails the sync on any other validation error', async () => {
+    const client = failingClient(
+      'meetings',
+      new HubSpotApiError(400, 'VALIDATION_ERROR', 'Property "hs_attachment_ids" does not exist'),
+    );
+    await expect(drain(delta(client as never, session, liveCursor({ step: 'meetings', after: null }), ctx))).rejects.toThrow(
+      'does not exist',
+    );
+  });
+
+  it('still fails the sync on any other error', async () => {
+    const client = failingClient('meetings', new HubSpotApiError(500, 'INTERNAL_ERROR', 'boom'));
+    await expect(drain(delta(client as never, session, liveCursor({ step: 'meetings', after: null }), ctx))).rejects.toThrow(
+      'INTERNAL_ERROR',
+    );
   });
 });

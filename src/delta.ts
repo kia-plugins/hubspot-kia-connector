@@ -1,5 +1,5 @@
 import { fetchAttachmentItems } from './attachments';
-import type { HubSpotClient } from './client';
+import { HubSpotApiError, type HubSpotClient } from './client';
 import type { Batch, Session } from '@kiagent/connector-sdk';
 import { propsFor } from './properties';
 import {
@@ -135,6 +135,18 @@ export async function* delta(
   yield* archivedSweep(client, session, watermarks, cursor.archiveSweep, budgetLeft);
 }
 
+/** Types whose archived listing HubSpot refused this process — warn once. */
+const warnedUnsupported = new Set<TypeKey>();
+
+/** HubSpot's 400 for a type whose archived records can't be listed. */
+function isUnsupportedArchivedListing(err: unknown): boolean {
+  return (
+    err instanceof HubSpotApiError &&
+    err.category === 'VALIDATION_ERROR' &&
+    /not yet supported/i.test(err.message)
+  );
+}
+
 /**
  * Deletion channel: HubSpot search excludes archived records, and a full
  * reconcile() listing of a large portal is thousands of requests per cycle —
@@ -173,7 +185,29 @@ async function* archivedSweep(
         properties: 'hs_attachment_ids',
       });
       if (after) params.set('after', after);
-      const page = await client.request<SearchEnvelope>('GET', `/crm/v3/objects/${step}?${params.toString()}`);
+      let page: SearchEnvelope;
+      try {
+        page = await client.request<SearchEnvelope>('GET', `/crm/v3/objects/${step}?${params.toString()}`);
+      } catch (err) {
+        if (!isUnsupportedArchivedListing(err)) throw err;
+        // HubSpot can't list archived records of this type (meetings: "Paging
+        // through deleted objects is not yet supported for object type 0-47").
+        // Skip it for this pass instead of failing the whole sync: rethrowing
+        // made every retry re-page the earlier types and fail here again.
+        // Its archived records are never swept — a known limitation.
+        if (!warnedUnsupported.has(step)) {
+          warnedUnsupported.add(step);
+          session.log('warn', `hubspot: archived ${step} can't be listed; deletions of that type are not synced`);
+        }
+        after = null;
+        const next = idx + 1 < ALL_TYPES.length ? { step: ALL_TYPES[idx + 1], after: null } : undefined;
+        yield {
+          phase: 'live',
+          items: [],
+          cursor: structuredClone({ phase: 'live', watermarks, ...(next ? { archiveSweep: next } : {}) } as HubSpotCursor),
+        };
+        break;
+      }
 
       const deletions = (page.results ?? []).flatMap((r: HubSpotRecord) => {
         const refs = [{ externalId: r.id, type: DOC_TYPE[step] }];
