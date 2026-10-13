@@ -1,6 +1,6 @@
 import type { AuthChannel, Document, HostFor, Session } from '@kiagent/connector-sdk';
-import { SourceAuthError } from '@kiagent/connector-sdk';
-import { createHubSpotSource } from '../source';
+import { SourceAuthError, SourcePermanentError } from '@kiagent/connector-sdk';
+import { createHubSpotSource, UPGRADE_MESSAGE } from '../source';
 
 const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
 
@@ -27,7 +27,9 @@ describe('descriptor', () => {
     expect(src.descriptor.auth).toBe('password');
     expect(src.descriptor.multiAccount).toBe(true);
     expect(src.descriptor.cadence).toEqual({ every: '30m' });
-    expect(src.descriptor.documentTypes).toContain('hubspot.contact');
+    expect(src.descriptor.documentTypes).toContain('hubspot.dossier');
+    expect(src.descriptor.documentTypes).not.toContain('hubspot.contact');
+    expect(src.descriptor.documentTypes).not.toContain('hubspot.task');
     expect(src.descriptor.documentTypes).toContain('file');
   });
 });
@@ -98,6 +100,42 @@ describe('pull dispatch', () => {
     for await (const b of src.pull(session(), null)) phases.push(b.phase);
     expect(phases[phases.length - 1]).toBe('live');
     expect(phases.filter((ph) => ph === 'backfill').length).toBeGreaterThan(0);
+  });
+
+  it('refuses a v0.1 cursor with a permanent error', async () => {
+    const src = createHubSpotSource(makeHost(() => ({ results: [] })), clock);
+    const old = { phase: 'live', watermarks: {} } as never;
+    const iter = src.pull(session(), old)[Symbol.asyncIterator]();
+    await expect(iter.next()).rejects.toBeInstanceOf(SourcePermanentError);
+    await expect(src.pull(session(), old)[Symbol.asyncIterator]().next()).rejects.toThrow(UPGRADE_MESSAGE);
+  });
+
+  it('resumes an interrupted v2 backfill without the permanent error', async () => {
+    const src = createHubSpotSource(makeHost(() => ({ results: [] })), clock);
+    const mid = { v: 2, phase: 'backfill', step: 'notes', after: 'N2', watermarks: { deals: '2026-01-01T00:00:00.000Z' }, backfillStartedAt: '2026-01-01T00:00:00.000Z' } as never;
+    const phases: string[] = [];
+    for await (const b of src.pull(session(), mid)) phases.push(b.phase);
+    expect(phases[phases.length - 1]).toBe('live');
+  });
+
+  it('null cursor → backfill, then a dossier pass in the same pull', async () => {
+    const src = createHubSpotSource(makeHost(() => ({ results: [] })), clock);
+    const cursors: Array<{ dossier?: { lastCompletedAt: string | null } }> = [];
+    for await (const b of src.pull(session(), null)) cursors.push(b.cursor as never);
+    expect(cursors[cursors.length - 1].dossier?.lastCompletedAt).toEqual(expect.any(String));
+  });
+
+  it('skips the pass when it is not due', async () => {
+    const urls: string[] = [];
+    const src = createHubSpotSource(makeHost((url) => { urls.push(url); return { results: [] }; }), clock);
+    const recent = new Date().toISOString();
+    const cursor = {
+      v: 2, phase: 'live',
+      watermarks: { deals: recent, tickets: recent, notes: recent, calls: recent, meetings: recent, emails: recent },
+      dossier: { lastCompletedAt: recent, attemptedAt: recent, scopes: {}, counts: {} },
+    } as never;
+    for await (const _ of src.pull(session(), cursor)) { /* drain */ }
+    expect(urls.some((u) => /objects\/contacts\?/.test(u))).toBe(false);
   });
 });
 

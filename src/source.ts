@@ -4,9 +4,11 @@ import { HubSpotClient, type HubSpotClientDeps, type NetFetch } from './client';
 import { delta } from './delta';
 import { renderItem } from './docs';
 import type { AuthChannel, Document, HostFor, Session, Source } from '@kiagent/connector-sdk';
-import { SourceAuthError } from '@kiagent/connector-sdk';
+import { SourceAuthError, SourcePermanentError } from '@kiagent/connector-sdk';
+import { DOSSIER_DOC_TYPE } from './dossier/layout';
+import { dossierPass, isPassDue } from './dossier/pass';
 import { fetchRenderContext } from './lookups';
-import { ALL_TYPES, DOC_TYPE, type HubSpotCursor, type HubSpotItem } from './types';
+import { CURSOR_VERSION, DOC_TYPE, INCREMENTAL_TYPES, type HubSpotCursor, type HubSpotItem } from './types';
 
 /** Read scopes the Private App needs — mirrored in README. account-info reads
  *  portal id at connect; sales-email-read unlocks email bodies; files unlocks
@@ -21,6 +23,8 @@ export const REQUIRED_SCOPES = [
   'files',
   'account-info.security.read',
 ];
+
+export const UPGRADE_MESSAGE = 'Remove and re-add the HubSpot account to upgrade to dossiers';
 
 async function requireToken(session: Session): Promise<string> {
   const creds = await session.credentials();
@@ -41,7 +45,7 @@ export function createHubSpotSource(
     descriptor: {
       id: 'hubspot',
       name: 'HubSpot',
-      documentTypes: [...ALL_TYPES.map((t) => DOC_TYPE[t]), 'file'],
+      documentTypes: [...INCREMENTAL_TYPES.map((t) => DOC_TYPE[t]), DOSSIER_DOC_TYPE, 'file'],
       auth: 'password',
       multiAccount: true,
       cadence: { every: '30m' },
@@ -94,15 +98,29 @@ export function createHubSpotSource(
     },
 
     async *pull(session: Session, cursor: HubSpotCursor | null) {
+      // Spec §6: v0.1 cursors index contacts/companies/tasks as standalone docs
+      // that nothing in v0.2 deletes — refuse instead of duplicating them.
+      if (cursor !== null && (cursor as { v?: unknown }).v !== CURSOR_VERSION) {
+        throw new SourcePermanentError(UPGRADE_MESSAGE);
+      }
       const token = await requireToken(session);
       const client = makeClient(token);
       const portalId = String(session.account.config.portalId ?? '');
       const ctx = await fetchRenderContext(client, portalId);
-      if (cursor === null || cursor.phase === 'backfill') {
-        yield* backfill(client, session, cursor, ctx);
-      } else {
-        yield* delta(client, session, cursor, ctx);
+      let latest: HubSpotCursor | null = cursor;
+      const incremental =
+        cursor === null || cursor.phase === 'backfill'
+          ? backfill(client, session, cursor, ctx)
+          : delta(client, session, cursor, ctx);
+      for await (const batch of incremental) {
+        latest = batch.cursor;
+        yield batch;
       }
+      if (session.signal.aborted || latest === null || latest.phase !== 'live') return;
+      // Wall clock on purpose: `clock` only paces the HTTP throttle in tests.
+      const now = Date.now();
+      if (!isPassDue(latest.dossier, now)) return;
+      yield* dossierPass(client, session, latest, ctx, now);
     },
 
     toDocument(item: HubSpotItem) {
