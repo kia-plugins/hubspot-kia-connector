@@ -1,8 +1,18 @@
-import type { ExternalRef } from '@kiagent/connector-sdk';
+import type { DocumentInput, ExternalRef } from '@kiagent/connector-sdk';
 
 export const OBJECT_TYPES = ['companies', 'contacts', 'deals', 'tickets'] as const;
 export const ENGAGEMENT_TYPES = ['notes', 'calls', 'meetings', 'tasks', 'emails'] as const;
 export const ALL_TYPES = [...OBJECT_TYPES, ...ENGAGEMENT_TYPES] as const;
+
+/** Spec §1: what the 30-minute incremental path (backfill, delta, archived
+ *  sweep) owns. Emails here are filtered by `isPassOwnedEmail`. */
+export const INCREMENTAL_TYPES = ['deals', 'tickets', 'notes', 'calls', 'meetings', 'emails'] as const;
+export type IncrementalTypeKey = (typeof INCREMENTAL_TYPES)[number];
+/** What the dossier pass lists. */
+export const PASS_TYPES = ['companies', 'contacts', 'tasks', 'emails'] as const;
+export type PassTypeKey = (typeof PASS_TYPES)[number];
+
+export const CURSOR_VERSION = 2 as const;
 
 export type ObjectTypeKey = (typeof OBJECT_TYPES)[number];
 export type EngagementTypeKey = (typeof ENGAGEMENT_TYPES)[number];
@@ -80,22 +90,37 @@ export type HubSpotItem =
       portalId: string;
       parent: ExternalRef;
       createdAt: string | null;
-    };
+    }
+  | { kind: 'dossier'; docs: DocumentInput[] };
+
+export interface DossierState {
+  lastCompletedAt: string | null;
+  attemptedAt: string | null;
+  /** scope key → part-count high-water mark: always ≥ (highest committed part index + 1). */
+  scopes: Record<string, number>;
+  /** Records listed per type by the last completed pass — the shrink guard's baseline. */
+  counts: Partial<Record<PassTypeKey, number>>;
+}
 
 export type HubSpotCursor =
   | {
+      v: 2;
       phase: 'backfill';
-      step: TypeKey;
+      step: IncrementalTypeKey;
       after: string | null;
-      watermarks: Partial<Record<TypeKey, string>>;
+      watermarks: Partial<Record<IncrementalTypeKey, string>>;
       backfillStartedAt: string;
     }
   | {
+      v: 2;
       phase: 'live';
-      watermarks: Record<TypeKey, string>;
+      watermarks: Record<IncrementalTypeKey, string>;
       /** Round-robin resume position of the archived-listing sweep. */
-      archiveSweep?: { step: TypeKey; after: string | null };
+      archiveSweep?: { step: IncrementalTypeKey; after: string | null };
+      dossier?: DossierState;
     };
+
+export type LiveCursor = Extract<HubSpotCursor, { phase: 'live' }>;
 
 export interface ListEnvelope {
   results?: HubSpotRecord[];
