@@ -16,11 +16,12 @@ import {
 } from '../types';
 import { activityRow, companyRow, contactRow } from './blocks';
 import { DOSSIER_DOC_TYPE, layoutScope, partId } from './layout';
-import { assignScopes, type DossierIndex, type Scope } from './scope';
+import { assignScopes, type DossierIndex } from './scope';
 
 export const DOSSIER_EVERY_MS = 6 * 3_600_000;
 export const DOSSIER_RETRY_MS = 3_600_000;
-export const CHUNK_MAX_CHARS = 2_000_000;
+/** Spec §4 CHUNK_MAX_BYTES: UTF-8 bytes of rendered markdown per batch. */
+export const CHUNK_MAX_BYTES = 2_000_000;
 export const SHRINK_RATIO = 0.5;
 const PAGE_LIMIT = 100;
 
@@ -71,14 +72,10 @@ async function listAll(
   return n;
 }
 
-function foldedEmailRefs(scope: Scope): ExternalRef[] {
-  const acts = [...scope.companies, ...scope.contacts].flatMap((s) => s.activities).concat(scope.orphans);
-  return acts.filter((a) => a.kind === 'emails').map((a) => ({ externalId: a.id, type: DOC_TYPE.emails }));
-}
-
 /**
  * Spec §4. Full rebuild of every pass-owned record into dossier parts:
- * attemptedAt → list (render while listing) → chunks of ≤ chunkMaxChars,
+ * attemptedAt → list (render while listing) → shrink guard → chunks of
+ * ≤ chunkMaxBytes (a lone oversized part still ships alone),
  * one item per batch (atomic) → final batch with stale-part deletions.
  * Not resumable: an abort simply stops; the next attempt starts over.
  */
@@ -88,7 +85,7 @@ export async function* dossierPass(
   cursor: LiveCursor,
   ctx: RenderContext,
   nowMs: number,
-  chunkMaxChars: number = CHUNK_MAX_CHARS,
+  chunkMaxBytes: number = CHUNK_MAX_BYTES,
 ): AsyncGenerator<Batch<HubSpotCursor, HubSpotItem>> {
   const prev = cursor.dossier ?? emptyDossier();
   const startedAt = new Date(nowMs).toISOString();
@@ -109,10 +106,20 @@ export async function* dossierPass(
     counts[type] = n;
   }
 
+  // Shrink guard BEFORE anything is written: a truncated index would misfile
+  // activity into orphan buckets and upsert half-empty parts. attemptedAt is
+  // already committed, so the next attempt waits DOSSIER_RETRY.
+  const shrunk = PASS_TYPES.filter((t) => (prev.counts[t] ?? 0) > 0 && (counts[t] ?? 0) < (prev.counts[t] ?? 0) * SHRINK_RATIO);
+  if (shrunk.length) {
+    session.log('warn', `hubspot dossier pass: ${shrunk.join(', ')} listing shrank below ${SHRINK_RATIO * 100}% of the last pass — skipping this rebuild`);
+    return;
+  }
+  const foldedEmails = new Set(index.activities.filter((a) => a.kind === 'emails').map((a) => a.id));
+
   const hi: Record<string, number> = { ...prev.scopes };
   const newP: Record<string, number> = {};
   let docs: DocumentInput[] = [];
-  let chars = 0;
+  let bytes = 0;
   let deletions: ExternalRef[] = [];
   const flush = (): Batch<HubSpotCursor, HubSpotItem> => {
     state = { ...state, scopes: { ...hi } };
@@ -123,7 +130,7 @@ export async function* dossierPass(
       cursor: snap(),
     };
     docs = [];
-    chars = 0;
+    bytes = 0;
     deletions = [];
     return b;
   };
@@ -136,22 +143,19 @@ export async function* dossierPass(
     // high-water mark rides each chunk's cursor so no committed part is lost.
     for (let i = 0; i < parts.length; i++) {
       if (session.signal.aborted) return;
+      const size = Buffer.byteLength(parts[i].markdown ?? '');
+      if (docs.length && bytes + size > chunkMaxBytes) yield flush();
       docs.push(parts[i]);
-      chars += parts[i].markdown?.length ?? 0;
+      bytes += size;
       hi[scope.key] = Math.max(hi[scope.key] ?? 0, i + 1);
-      if (chars >= chunkMaxChars) yield flush();
+      // A folded email's standalone ref is retired in the batch that writes it.
+      for (const id of parts[i].metadata.engagementIds as string[]) {
+        if (foldedEmails.has(id)) deletions.push({ externalId: id, type: DOC_TYPE.emails });
+      }
     }
-    deletions.push(...foldedEmailRefs(scope));
   }
   if (session.signal.aborted) return;
   if (docs.length || deletions.length) yield flush();
-
-  const shrunk = PASS_TYPES.filter((t) => (prev.counts[t] ?? 0) > 0 && (counts[t] ?? 0) < (prev.counts[t] ?? 0) * SHRINK_RATIO);
-  if (shrunk.length) {
-    session.log('warn', `hubspot dossier pass: ${shrunk.join(', ')} listing shrank below ${SHRINK_RATIO * 100}% of the last pass — skipping deletions`);
-    yield { phase: 'live', items: [], cursor: snap() };
-    return;
-  }
 
   const stale: ExternalRef[] = [];
   for (const [key, high] of Object.entries(hi)) {

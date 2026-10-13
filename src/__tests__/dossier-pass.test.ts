@@ -121,6 +121,7 @@ describe('dossierPass', () => {
     const { session } = mkSession();
     const prev = { ...emptyDossier(), lastCompletedAt: iso(NOW - DOSSIER_EVERY_MS), attemptedAt: iso(NOW - DOSSIER_EVERY_MS), scopes: { 'dom:gone.com': 2 }, counts: { contacts: 100 } };
     const bs = await drain(dossierPass(client({ contacts: [contact('5', 'a@nike.com')] }), session, live(prev), ctx, NOW));
+    expect(docsOf(bs)).toEqual([]); // nothing built from a truncated index is written
     expect(bs.flatMap((b) => b.deletions ?? []).filter((r) => r.type === 'hubspot.dossier')).toEqual([]);
     const d = lastDossier(bs);
     expect(d.lastCompletedAt).toBe(prev.lastCompletedAt);
@@ -144,5 +145,31 @@ describe('dossierPass', () => {
     const bs = await drain(dossierPass(c, session, live(), ctx, NOW));
     expect(paths.filter((p) => p.startsWith('/crm/v3/objects/contacts?'))).toHaveLength(2);
     expect(lastDossier(bs).counts.contacts).toBe(2);
+  });
+
+  it('deletes each folded email standalone ref in the same batch that writes its part', async () => {
+    const { session } = mkSession();
+    const contacts = Array.from({ length: 40 }, (_, i) => contact(String(100 + i), `p${i}@nike.com`));
+    const emails = contacts.map((c, i) => outbound(`e${i}`, c.id));
+    const bs = await drain(dossierPass(client({ contacts, emails }), session, live(), ctx, NOW, 20_000));
+    for (const b of bs) {
+      const written = b.items.flatMap((i) => (i.kind === 'dossier' ? i.docs : [])).flatMap((d) => d.metadata.engagementIds as string[]);
+      const deleted = (b.deletions ?? []).filter((r) => r.type === 'hubspot.email').map((r) => r.externalId);
+      expect(deleted.sort()).toEqual([...written].sort());
+    }
+  });
+
+  it('bounds every chunk by UTF-8 bytes, not characters', async () => {
+    const { session } = mkSession();
+    const contacts = Array.from({ length: 40 }, (_, i) => contact(String(100 + i), `p${i}@nike.com`));
+    const emails = contacts.map((c, i) => ({ ...outbound(`e${i}`, c.id), properties: { ...outbound(`e${i}`, c.id).properties, hs_email_text: '漢'.repeat(3000) } }));
+    const bs = await drain(dossierPass(client({ contacts, emails }), session, live(), ctx, NOW, 20_000));
+    const chunks = bs.filter((b) => b.items.length);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const b of chunks) {
+      const docs = b.items.flatMap((i) => (i.kind === 'dossier' ? i.docs : []));
+      const bytes = docs.reduce((n, d) => n + Buffer.byteLength(d.markdown ?? ''), 0);
+      expect(bytes).toBeLessThanOrEqual(20_000);
+    }
   });
 });
