@@ -1,4 +1,4 @@
-import { renderItem } from '../docs';
+import { relatedLine, renderItem } from '../docs';
 import type { DocumentInput } from '@kiagent/connector-sdk';
 import { ctx } from '../testing/fixtures';
 import type { HubSpotItem } from '../types';
@@ -6,7 +6,7 @@ import type { HubSpotItem } from '../types';
 const one = (item: HubSpotItem): DocumentInput => renderItem(item) as DocumentInput;
 
 describe('renderItem: note', () => {
-  it('converts the HTML body, parents to the contact, links the parent record', () => {
+  it('converts the HTML body, has no parent, links related records', () => {
     const doc = one({
       kind: 'notes',
       record: {
@@ -19,7 +19,8 @@ describe('renderItem: note', () => {
     expect(doc.type).toBe('hubspot.note');
     expect(doc.title).toBe('Call went well');
     expect(doc.markdown).toContain('Call went well');
-    expect(doc.parent).toEqual({ externalId: '501', type: 'hubspot.contact' });
+    expect(doc.parent).toBeUndefined();
+    expect(doc.markdown).toContain('**Related:** [contact 501](https://app.hubspot.com/contacts/');
     expect(doc.url).toBe('https://app.hubspot.com/contacts/123/record/0-1/501');
     expect(doc.createdAt).toBe('2026-03-02T10:00:00Z');
     expect(doc.metadata.hubspot_engagement_type).toBe('notes');
@@ -54,7 +55,7 @@ describe('renderItem: email', () => {
     expect(doc.metadata.from).toBe('jane@acme.com');
     expect(doc.metadata.to).toEqual(['me@us.co']);
     expect(doc.metadata.status).toBe('SENT');
-    expect(doc.parent).toEqual({ externalId: '88', type: 'hubspot.deal' });
+    expect(doc.parent).toBeUndefined();
   });
 
   it('falls back to html body and survives unparseable headers', () => {
@@ -163,4 +164,22 @@ describe('renderItem: file', () => {
     // an unextractable file still deep-links into the portal
     expect(doc.url).toBe('https://app.hubspot.com/file-preview/123/file/f2/');
   });
+});
+
+describe('dossier item', () => {
+  it('passes pre-rendered parts through', () => {
+    const docs = [{ externalId: 'hubspot-dossier:dom:x.co:0', type: 'hubspot.dossier', title: 't', markdown: 'm', metadata: {}, createdAt: null }];
+    expect(renderItem({ kind: 'dossier', docs })).toBe(docs);
+  });
+});
+
+describe('relatedLine', () => {
+  it('lists at most 10 links, contacts first', () => {
+    const assoc = { contacts: Array.from({ length: 12 }, (_, i) => String(i)), deals: ['d1'] };
+    const line = relatedLine(assoc, ctx);
+    expect(line.startsWith('**Related:** [contact 0](')).toBe(true);
+    expect(line.match(/\]\(/g)).toHaveLength(10);
+    expect(line).not.toContain('deal d1');
+  });
+  it('is empty without associations', () => expect(relatedLine({}, ctx)).toBe(''));
 });

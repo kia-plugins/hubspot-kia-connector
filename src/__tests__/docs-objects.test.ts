@@ -1,4 +1,4 @@
-import { primaryParent, recordUrl, renderItem } from '../docs';
+import { recordUrl, relatedLine, renderItem } from '../docs';
 import type { DocumentInput } from '@kiagent/connector-sdk';
 import { ctx } from '../testing/fixtures';
 import type { HubSpotItem } from '../types';
@@ -89,11 +89,11 @@ describe('renderItem: ticket', () => {
   });
 });
 
-describe('primaryParent / recordUrl', () => {
+describe('relatedLine / recordUrl', () => {
   it('applies contact > deal > ticket > company priority', () => {
-    expect(primaryParent({ companies: ['1'], deals: ['2'], contacts: ['3'] })).toEqual({ externalId: '3', type: 'hubspot.contact' });
-    expect(primaryParent({ companies: ['1'], tickets: ['4'] })).toEqual({ externalId: '4', type: 'hubspot.ticket' });
-    expect(primaryParent({})).toBe(null);
+    expect(relatedLine({ companies: ['1'], deals: ['2'], contacts: ['3'] }, ctx)).toMatch(/^\*\*Related:\*\* \[contact 3\].*\[deal 2\].*\[company 1\]/);
+    expect(relatedLine({ companies: ['1'], tickets: ['4'] }, ctx)).toMatch(/^\*\*Related:\*\* \[ticket 4\].*\[company 1\]/);
+    expect(relatedLine({}, ctx)).toBe('');
     expect(recordUrl(ctx, 'companies', '77')).toBe('https://app.hubspot.com/contacts/123/record/0-2/77');
   });
 });

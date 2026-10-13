@@ -1,4 +1,4 @@
-import type { DocumentInput, ExternalRef } from '@kiagent/connector-sdk';
+import type { DocumentInput } from '@kiagent/connector-sdk';
 import { ownerLabel } from './lookups';
 import { htmlToText, propLines, truncate } from './render';
 import {
@@ -27,15 +27,25 @@ export function filePreviewUrl(portalId: string, fileId: string): string {
   return `https://app.hubspot.com/file-preview/${portalId}/file/${fileId}/`;
 }
 
-/** Engagements parent onto their most specific associated object. */
-const PARENT_PRIORITY: ObjectTypeKey[] = ['contacts', 'deals', 'tickets', 'companies'];
+/** Engagements link (url only — never `parent`: archiving a parent archives
+ *  its children, spec §1) to their most specific associated record. */
+const LINK_PRIORITY: ObjectTypeKey[] = ['contacts', 'deals', 'tickets', 'companies'];
+const LINK_LABEL: Record<ObjectTypeKey, string> = { contacts: 'contact', deals: 'deal', tickets: 'ticket', companies: 'company' };
+const MAX_RELATED = 10;
 
-export function primaryParent(assoc: Associations): ExternalRef | null {
-  for (const t of PARENT_PRIORITY) {
+function primaryLink(assoc: Associations): { type: ObjectTypeKey; id: string } | null {
+  for (const t of LINK_PRIORITY) {
     const id = assoc[t]?.[0];
-    if (id) return { externalId: id, type: DOC_TYPE[t] };
+    if (id) return { type: t, id };
   }
   return null;
+}
+
+export function relatedLine(assoc: Associations, ctx: RenderContext): string {
+  const links = LINK_PRIORITY.flatMap((t) =>
+    (assoc[t] ?? []).map((id) => `[${LINK_LABEL[t]} ${id}](${recordUrl(ctx, t, id)})`),
+  ).slice(0, MAX_RELATED);
+  return links.length ? `**Related:** ${links.join(', ')}` : '';
 }
 
 const p = (r: HubSpotRecord, name: string): string | null => r.properties[name] ?? null;
@@ -60,7 +70,7 @@ interface ParsedHeaders {
   to: string[];
 }
 
-function parseEmailHeaders(raw: string | null): ParsedHeaders {
+export function parseEmailHeaders(raw: string | null): ParsedHeaders {
   if (!raw) return { from: null, to: [] };
   try {
     const h = JSON.parse(raw) as {
@@ -83,7 +93,7 @@ function engagementDoc(
   ctx: RenderContext,
 ): DocumentInput {
   const owner = ownerLabel(ctx, p(record, 'hubspot_owner_id'));
-  const parent = primaryParent(assoc);
+  const link = primaryLink(assoc);
   const metadata: Record<string, unknown> = {
     ...baseMetadata(kind, record, assoc, ctx),
     hubspot_engagement_type: kind,
@@ -140,15 +150,8 @@ function engagementDoc(
     ]);
   }
 
-  const markdown = [`# ${title}`, header, body].filter(Boolean).join('\n\n');
-  const parentUrl =
-    parent === null
-      ? undefined
-      : recordUrl(
-          ctx,
-          (Object.entries(DOC_TYPE).find(([, v]) => v === parent.type)?.[0] ?? 'contacts') as ObjectTypeKey,
-          parent.externalId,
-        );
+  const markdown = [`# ${title}`, header, relatedLine(assoc, ctx), body].filter(Boolean).join('\n\n');
+  const parentUrl = link ? recordUrl(ctx, link.type, link.id) : undefined;
 
   return {
     externalId: record.id,
@@ -158,7 +161,6 @@ function engagementDoc(
     ...(parentUrl ? { url: parentUrl } : {}),
     metadata,
     createdAt: p(record, 'hs_timestamp'),
-    ...(parent ? { parent } : {}),
   };
 }
 
@@ -251,6 +253,7 @@ function objectDoc(kind: ObjectTypeKey, record: HubSpotRecord, assoc: Associatio
 }
 
 export function renderItem(item: HubSpotItem): DocumentInput | DocumentInput[] | null {
+  if (item.kind === 'dossier') return item.docs;
   if (item.kind === 'file') {
     return {
       externalId: item.fileId,
