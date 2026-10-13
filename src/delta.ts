@@ -1,17 +1,20 @@
 import { fetchAttachmentItems } from './attachments';
 import { HubSpotApiError, type HubSpotClient } from './client';
 import type { Batch, Session } from '@kiagent/connector-sdk';
+import { isPassOwnedEmail } from './ownership';
 import { propsFor } from './properties';
 import {
-  ALL_TYPES,
   DOC_TYPE,
   ENGAGEMENT_TYPES,
+  INCREMENTAL_TYPES,
   LAST_MODIFIED_PROP,
   OBJECT_TYPES,
   type Associations,
   type HubSpotCursor,
   type HubSpotItem,
   type HubSpotRecord,
+  type IncrementalTypeKey,
+  type LiveCursor,
   type RenderContext,
   type SearchEnvelope,
   type TypeKey,
@@ -28,8 +31,6 @@ export const SWEEP_RESERVE = 10;
 /** HubSpot search refuses paging past 10k results — re-window before that. */
 const SEARCH_PAGE_CAP = 9_900;
 const PAGE_LIMIT = 100;
-
-type LiveCursor = Extract<HubSpotCursor, { phase: 'live' }>;
 
 export async function batchReadAssociations(
   client: HubSpotClient,
@@ -72,7 +73,10 @@ export async function* delta(
   const watermarks = { ...cursor.watermarks };
   const startCount = client.requestCount;
   const budgetLeft = () => DELTA_REQUEST_BUDGET - (client.requestCount - startCount);
-  const order = [...ALL_TYPES].sort((a, b) => (watermarks[a] < watermarks[b] ? -1 : 1));
+  const order = [...INCREMENTAL_TYPES].sort((a, b) => (watermarks[a] < watermarks[b] ? -1 : 1));
+  /** Spec §4 "Cursor preservation": every yielded cursor is the input cursor
+   *  (so `dossier` and `v` survive) with only the changed fields replaced. */
+  const live = (patch: Partial<LiveCursor>): HubSpotCursor => structuredClone({ ...cursor, watermarks, ...patch });
 
   for (const step of order) {
     if (session.signal.aborted) return;
@@ -96,17 +100,22 @@ export async function* delta(
       const records = page.results ?? [];
       if (records.length === 0) break;
 
-      const assocMap = await batchReadAssociations(client, step, records.map((r) => r.id));
-      const items: HubSpotItem[] = [];
+      // Pass-owned sends are dropped BEFORE the association read so they never
+      // spend the tick's request budget; the watermark still covers them.
+      const kept = step === 'emails' ? records.filter((r) => !isPassOwnedEmail(r)) : records;
       let maxSeen = watermarks[step];
       for (const record of records) {
+        const lm = record.properties[prop];
+        if (lm && lm > maxSeen) maxSeen = lm;
+      }
+      const assocMap = await batchReadAssociations(client, step, kept.map((r) => r.id));
+      const items: HubSpotItem[] = [];
+      for (const record of kept) {
         if (session.signal.aborted) return;
         items.push({ kind: step, record, assoc: assocMap[record.id] ?? {}, ctx });
         if (isEngagement(step) && record.properties.hs_attachment_ids) {
           items.push(...(await fetchAttachmentItems(client, session, record, DOC_TYPE[step], ctx.portalId)));
         }
-        const lm = record.properties[prop];
-        if (lm && lm > maxSeen) maxSeen = lm;
       }
       // An abort mid-fetchAttachmentItems can truncate the file set for the
       // last record in this page — never commit an advanced watermark/cursor
@@ -117,7 +126,7 @@ export async function* delta(
       yield {
         phase: 'live',
         items,
-        cursor: structuredClone({ phase: 'live', watermarks, archiveSweep: cursor.archiveSweep } as HubSpotCursor),
+        cursor: live({ archiveSweep: cursor.archiveSweep }),
       };
 
       const nextAfter = page.paging?.next?.after;
@@ -132,11 +141,11 @@ export async function* delta(
     }
   }
 
-  yield* archivedSweep(client, session, watermarks, cursor.archiveSweep, budgetLeft);
+  yield* archivedSweep(client, session, cursor.archiveSweep, budgetLeft, live);
 }
 
 /** Types whose archived listing HubSpot refused this process — warn once. */
-const warnedUnsupported = new Set<TypeKey>();
+const warnedUnsupported = new Set<IncrementalTypeKey>();
 
 /** HubSpot's 400 for a type whose archived records can't be listed. */
 function isUnsupportedArchivedListing(err: unknown): boolean {
@@ -159,15 +168,15 @@ function isUnsupportedArchivedListing(err: unknown): boolean {
 async function* archivedSweep(
   client: HubSpotClient,
   session: Session,
-  watermarks: Record<TypeKey, string>,
   sweep: LiveCursor['archiveSweep'],
   budgetLeft: () => number,
+  live: (patch: Partial<LiveCursor>) => HubSpotCursor,
 ): AsyncGenerator<Batch<HubSpotCursor, HubSpotItem>> {
-  let idx = sweep ? Math.max(0, ALL_TYPES.indexOf(sweep.step)) : 0;
+  let idx = sweep ? Math.max(0, INCREMENTAL_TYPES.indexOf(sweep.step)) : 0;
   let after: string | null = sweep?.after ?? null;
 
-  for (; idx < ALL_TYPES.length; idx++) {
-    const step = ALL_TYPES[idx];
+  for (; idx < INCREMENTAL_TYPES.length; idx++) {
+    const step = INCREMENTAL_TYPES[idx];
     for (;;) {
       if (session.signal.aborted) return;
       if (budgetLeft() <= 0) {
@@ -175,7 +184,7 @@ async function* archivedSweep(
         yield {
           phase: 'live',
           items: [],
-          cursor: structuredClone({ phase: 'live', watermarks, archiveSweep: { step, after } } as HubSpotCursor),
+          cursor: live({ archiveSweep: { step, after } }),
         };
         return;
       }
@@ -200,11 +209,11 @@ async function* archivedSweep(
           session.log('warn', `hubspot: archived ${step} can't be listed; deletions of that type are not synced`);
         }
         after = null;
-        const next = idx + 1 < ALL_TYPES.length ? { step: ALL_TYPES[idx + 1], after: null } : undefined;
+        const next = idx + 1 < INCREMENTAL_TYPES.length ? { step: INCREMENTAL_TYPES[idx + 1], after: null } : undefined;
         yield {
           phase: 'live',
           items: [],
-          cursor: structuredClone({ phase: 'live', watermarks, ...(next ? { archiveSweep: next } : {}) } as HubSpotCursor),
+          cursor: live({ archiveSweep: next }),
         };
         break;
       }
@@ -220,8 +229,8 @@ async function* archivedSweep(
       after = page.paging?.next?.after ?? null;
       const nextSweep = after
         ? { step, after }
-        : idx + 1 < ALL_TYPES.length
-          ? { step: ALL_TYPES[idx + 1], after: null }
+        : idx + 1 < INCREMENTAL_TYPES.length
+          ? { step: INCREMENTAL_TYPES[idx + 1], after: null }
           : undefined;
 
       if (deletions.length > 0 || nextSweep === undefined) {
@@ -229,7 +238,7 @@ async function* archivedSweep(
           phase: 'live',
           items: [],
           deletions,
-          cursor: structuredClone({ phase: 'live', watermarks, ...(nextSweep ? { archiveSweep: nextSweep } : {}) } as HubSpotCursor),
+          cursor: live({ archiveSweep: nextSweep }),
         };
       }
       if (!after) break;

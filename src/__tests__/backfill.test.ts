@@ -1,7 +1,7 @@
 import { assocFromRecord, backfill } from '../backfill';
 import type { Batch, Session } from '@kiagent/connector-sdk';
 import type { HubSpotCursor, HubSpotItem, RenderContext } from '../types';
-import { ALL_TYPES } from '../types';
+import { INCREMENTAL_TYPES } from '../types';
 
 const ctx: RenderContext = { portalId: '1', owners: {}, dealStages: {}, ticketStages: {}, customProps: {} };
 
@@ -13,7 +13,7 @@ const mkSession = () => {
   };
 };
 
-/** Every type returns one single-record page except contacts (two pages). */
+/** Every type returns one single-record page except deals (two pages). */
 function stubClient() {
   const paths: string[] = [];
   const client = {
@@ -22,10 +22,10 @@ function stubClient() {
     request: async <T>(_m: string, pathname: string): Promise<T> => {
       paths.push(pathname);
       const type = pathname.split('?')[0].split('/')[4];
-      if (type === 'contacts' && !pathname.includes('after=')) {
-        return { results: [{ id: 'c1', properties: {}, associations: { companies: { results: [{ id: '77', type: 'x' }] } } }], paging: { next: { after: 'P2' } } } as T;
+      if (type === 'deals' && !pathname.includes('after=')) {
+        return { results: [{ id: 'd1', properties: {}, associations: { companies: { results: [{ id: '77', type: 'x' }] } } }], paging: { next: { after: 'P2' } } } as T;
       }
-      if (type === 'contacts') return { results: [{ id: 'c2', properties: {} }] } as T;
+      if (type === 'deals') return { results: [{ id: 'd2', properties: {} }] } as T;
       return { results: [{ id: `${type}-1`, properties: {} }] } as T;
     },
     download: async () => ({ bytes: new Uint8Array(), mime: 'x' }),
@@ -44,58 +44,56 @@ describe('backfill', () => {
     const { session } = mkSession();
     const batches = await drain(backfill(stubClient() as never, session, null, ctx));
 
-    // 9 types, contacts contributes 2 pages → 10 backfill batches + 1 final live
-    expect(batches).toHaveLength(11);
+    // 6 incremental types, deals contributes 2 pages → 7 backfill batches + 1 final live
+    expect(batches).toHaveLength(8);
     expect(batches[0].phase).toBe('backfill');
-    expect((batches[0].items[0] as { record: { id: string } }).record.id).toBe('companies-1');
+    expect((batches[0].items[0] as { record: { id: string } }).record.id).toBe('d1');
 
-    // contacts page 1 carries its paging cursor
-    const contactsPage1 = batches[1];
-    expect(contactsPage1.cursor).toMatchObject({ phase: 'backfill', step: 'contacts', after: 'P2' });
+    // deals page 1 carries its paging cursor
+    expect(batches[0].cursor).toMatchObject({ v: 2, phase: 'backfill', step: 'deals', after: 'P2' });
     // association came through from the list endpoint
-    expect((contactsPage1.items[0] as { assoc: unknown }).assoc).toEqual({ companies: ['77'] });
+    expect((batches[0].items[0] as { assoc: unknown }).assoc).toEqual({ companies: ['77'] });
 
     const last = batches[batches.length - 1];
     expect(last.phase).toBe('live');
     expect(last.items).toHaveLength(0);
     const lastCursor = last.cursor as Extract<HubSpotCursor, { phase: 'live' }>;
-    for (const t of ALL_TYPES) expect(typeof lastCursor.watermarks[t]).toBe('string');
+    for (const t of INCREMENTAL_TYPES) expect(typeof lastCursor.watermarks[t]).toBe('string');
   });
 
   it('resumes mid-type from a backfill cursor', async () => {
     const { session } = mkSession();
     const client = stubClient();
     const cursor: Extract<HubSpotCursor, { phase: 'backfill' }> = {
+      v: 2,
       phase: 'backfill',
-      step: 'contacts',
+      step: 'deals',
       after: 'P2',
-      watermarks: { companies: '2026-01-01T00:00:00.000Z' },
+      watermarks: { deals: '2026-01-01T00:00:00.000Z' },
       backfillStartedAt: '2026-01-01T00:00:00.000Z',
     };
     const batches = await drain(backfill(client as never, session, cursor, ctx));
-    // contacts page 2, then the 7 remaining types, then live
+    // deals page 2, then the 5 remaining types, then live
     expect(client.paths[0]).toContain('after=P2');
     expect(batches[batches.length - 1].phase).toBe('live');
     const wm = (batches[batches.length - 1].cursor as Extract<HubSpotCursor, { phase: 'live' }>).watermarks;
-    expect(wm.companies).toBe('2026-01-01T00:00:00.000Z'); // preserved, not restamped
+    expect(wm.deals).toBe('2026-01-01T00:00:00.000Z'); // preserved, not restamped
   });
 
   it('checkpoints straight to live when the last type (emails) finishes its final page', async () => {
     const { session } = mkSession();
     const client = stubClient();
     const cursor: Extract<HubSpotCursor, { phase: 'backfill' }> = {
+      v: 2,
       phase: 'backfill',
       step: 'emails',
       after: null,
       watermarks: {
-        companies: '2026-01-01T00:00:00.000Z',
-        contacts: '2026-01-01T00:00:00.000Z',
         deals: '2026-01-01T00:00:00.000Z',
         tickets: '2026-01-01T00:00:00.000Z',
         notes: '2026-01-01T00:00:00.000Z',
         calls: '2026-01-01T00:00:00.000Z',
         meetings: '2026-01-01T00:00:00.000Z',
-        tasks: '2026-01-01T00:00:00.000Z',
       },
       backfillStartedAt: '2026-01-01T00:00:00.000Z',
     };
@@ -107,7 +105,7 @@ describe('backfill', () => {
     // must be an exact-resume live cursor, NOT a backfill cursor pointing back at emails
     expect(emailsBatch.cursor.phase).toBe('live');
     const wm = (emailsBatch.cursor as Extract<HubSpotCursor, { phase: 'live' }>).watermarks;
-    for (const t of ALL_TYPES) expect(typeof wm[t]).toBe('string');
+    for (const t of INCREMENTAL_TYPES) expect(typeof wm[t]).toBe('string');
   });
 
   it('stops yielding on abort', async () => {
@@ -168,6 +166,33 @@ describe('backfill', () => {
     expect(batches.some((b) => b.items.some((i) => (i as { kind: string }).kind === 'file'))).toBe(false);
     // and the generator must not have advanced/committed a cursor past notes
     expect(batches.some((b) => b.phase === 'live')).toBe(false);
+  });
+});
+
+describe('backfill ownership', () => {
+  it('never lists pass-owned types and drops pass-owned emails', async () => {
+    const { session } = mkSession();
+    const paths: string[] = [];
+    const client = {
+      requestCount: 0,
+      request: async <T>(_m: string, pathname: string): Promise<T> => {
+        paths.push(pathname);
+        const type = pathname.split('?')[0].split('/')[4];
+        if (type === 'emails')
+          return { results: [
+            { id: 'out', properties: { hs_email_direction: 'EMAIL' } },
+            { id: 'in', properties: { hs_email_direction: 'INCOMING_EMAIL' } },
+          ] } as T;
+        return { results: [] } as T;
+      },
+      download: async () => ({ bytes: new Uint8Array(), mime: 'x' }),
+    };
+    const batches = await drain(backfill(client as never, session, null, ctx));
+    expect(paths.some((p) => /objects\/(contacts|companies|tasks)\b/.test(p))).toBe(false);
+    const ids = batches.flatMap((b) => b.items.map((i) => (i as { record?: { id: string } }).record?.id));
+    expect(ids).toContain('in');
+    expect(ids).not.toContain('out');
+    for (const b of batches) expect((b.cursor as { v: number }).v).toBe(2);
   });
 });
 

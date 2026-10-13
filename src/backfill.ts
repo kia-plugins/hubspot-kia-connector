@@ -2,15 +2,17 @@ import { fetchAttachmentItems } from './attachments';
 import type { HubSpotClient } from './client';
 import type { Batch, Session } from '@kiagent/connector-sdk';
 import { propsFor } from './properties';
+import { isPassOwnedEmail } from './ownership';
 import {
-  ALL_TYPES,
   DOC_TYPE,
   ENGAGEMENT_TYPES,
+  INCREMENTAL_TYPES,
   OBJECT_TYPES,
   type Associations,
   type HubSpotCursor,
   type HubSpotItem,
   type HubSpotRecord,
+  type IncrementalTypeKey,
   type ListEnvelope,
   type RenderContext,
   type TypeKey,
@@ -41,9 +43,9 @@ function listPath(type: TypeKey, after: string | null, props: string[]): string 
 }
 
 /**
- * Phased, resumable backfill: every type in ALL_TYPES order (objects before
- * engagements so engagement parent refs resolve against already-committed
- * docs), one Batch per page — each yield is a crash-safe checkpoint. Finishes
+ * Phased, resumable backfill: every incremental type in INCREMENTAL_TYPES
+ * order (spec §1 — contacts, companies and tasks belong to the dossier
+ * pass; pass-owned emails are skipped), one Batch per page — each yield is a crash-safe checkpoint. Finishes
  * with an empty `live` batch so delta never sees a backfill cursor. Watermarks
  * are stamped with backfillStartedAt (delta's overlap re-covers anything
  * modified mid-backfill).
@@ -56,11 +58,11 @@ export async function* backfill(
 ): AsyncGenerator<Batch<HubSpotCursor, HubSpotItem>> {
   const watermarks = { ...(cursor?.watermarks ?? {}) };
   const startedAt = cursor?.backfillStartedAt ?? new Date().toISOString();
-  let stepIdx = Math.max(0, ALL_TYPES.indexOf(cursor?.step ?? 'companies'));
+  let stepIdx = Math.max(0, INCREMENTAL_TYPES.indexOf(cursor?.step ?? 'deals'));
   let after: string | null = cursor?.after ?? null;
 
-  for (; stepIdx < ALL_TYPES.length; stepIdx++) {
-    const step = ALL_TYPES[stepIdx];
+  for (; stepIdx < INCREMENTAL_TYPES.length; stepIdx++) {
+    const step = INCREMENTAL_TYPES[stepIdx];
     for (;;) {
       if (session.signal.aborted) return;
       const page = await client.request<ListEnvelope>('GET', listPath(step, after, propsFor(step, ctx)));
@@ -68,6 +70,7 @@ export async function* backfill(
       const items: HubSpotItem[] = [];
       for (const record of page.results ?? []) {
         if (session.signal.aborted) return;
+        if (step === 'emails' && isPassOwnedEmail(record)) continue;
         const assoc = assocFromRecord(record);
         items.push({ kind: step, record, assoc, ctx });
         if (isEngagement(step) && record.properties.hs_attachment_ids) {
@@ -81,14 +84,15 @@ export async function* backfill(
 
       after = page.paging?.next?.after ?? null;
       if (!after) watermarks[step] = startedAt;
-      const isLastType = stepIdx === ALL_TYPES.length - 1;
+      const isLastType = stepIdx === INCREMENTAL_TYPES.length - 1;
       const next: HubSpotCursor = after
-        ? { phase: 'backfill', step, after, watermarks: { ...watermarks }, backfillStartedAt: startedAt }
+        ? { v: 2, phase: 'backfill', step, after, watermarks: { ...watermarks }, backfillStartedAt: startedAt }
         : isLastType
-          ? { phase: 'live', watermarks: { ...watermarks } as Record<TypeKey, string> }
+          ? { v: 2, phase: 'live', watermarks: { ...watermarks } as Record<IncrementalTypeKey, string> }
           : {
+              v: 2,
               phase: 'backfill',
-              step: ALL_TYPES[stepIdx + 1] ?? step,
+              step: INCREMENTAL_TYPES[stepIdx + 1] ?? step,
               after: null,
               watermarks: { ...watermarks },
               backfillStartedAt: startedAt,
@@ -98,6 +102,6 @@ export async function* backfill(
     }
   }
 
-  const full = Object.fromEntries(ALL_TYPES.map((t) => [t, watermarks[t] ?? startedAt])) as Record<TypeKey, string>;
-  yield { phase: 'live', items: [], cursor: { phase: 'live', watermarks: full } };
+  const full = Object.fromEntries(INCREMENTAL_TYPES.map((t) => [t, watermarks[t] ?? startedAt])) as Record<IncrementalTypeKey, string>;
+  yield { phase: 'live', items: [], cursor: { v: 2, phase: 'live', watermarks: full } };
 }

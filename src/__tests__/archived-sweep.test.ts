@@ -1,14 +1,15 @@
 import { HubSpotApiError } from '../client';
 import { delta } from '../delta';
 import type { Batch, Session } from '@kiagent/connector-sdk';
-import { ALL_TYPES, type HubSpotCursor, type HubSpotItem, type TypeKey, type RenderContext } from '../types';
+import { INCREMENTAL_TYPES, type HubSpotCursor, type HubSpotItem, type IncrementalTypeKey, type TypeKey, type RenderContext } from '../types';
 
 const ctx: RenderContext = { portalId: '1', owners: {}, dealStages: {}, ticketStages: {}, customProps: {} };
 const session = { signal: new AbortController().signal, log: jest.fn() } as unknown as Session;
 
-const liveCursor = (archiveSweep?: { step: TypeKey; after: string | null }): Extract<HubSpotCursor, { phase: 'live' }> => ({
+const liveCursor = (archiveSweep?: { step: IncrementalTypeKey; after: string | null }): Extract<HubSpotCursor, { phase: 'live' }> => ({
+  v: 2,
   phase: 'live',
-  watermarks: Object.fromEntries(ALL_TYPES.map((t) => [t, '2026-07-01T00:00:00.000Z'])) as Record<TypeKey, string>,
+  watermarks: Object.fromEntries(INCREMENTAL_TYPES.map((t) => [t, '2026-07-01T00:00:00.000Z'])) as Record<IncrementalTypeKey, string>,
   archiveSweep,
 });
 
@@ -40,12 +41,13 @@ function stubClient(archivedByType: Partial<Record<TypeKey, unknown>>) {
 describe('archivedSweep', () => {
   it('emits deletions for archived records, including engagement attachment file docs', async () => {
     const client = stubClient({
-      contacts: { results: [{ id: 'c1', properties: {} }] },
+      deals: { results: [{ id: 'd1', properties: {} }] },
       emails: { results: [{ id: 'e1', properties: { hs_attachment_ids: 'f1;f2' } }] },
     });
     const batches = await drain(delta(client as never, session, liveCursor(), ctx));
     const dels = batches.flatMap((b) => b.deletions ?? []);
-    expect(dels).toContainEqual({ externalId: 'c1', type: 'hubspot.contact' });
+    expect(dels).toContainEqual({ externalId: 'd1', type: 'hubspot.deal' });
+    expect(client.calls.some((c) => /objects\/(contacts|companies|tasks)\?/.test(c))).toBe(false);
     expect(dels).toContainEqual({ externalId: 'e1', type: 'hubspot.email' });
     expect(dels).toContainEqual({ externalId: 'f1', type: 'file' });
     expect(dels).toContainEqual({ externalId: 'f2', type: 'file' });
@@ -59,30 +61,30 @@ describe('archivedSweep', () => {
   });
 
   it('resumes from a stored sweep position and carries the pager cursor', async () => {
-    // First tasks page carries a pager cursor; the resumed page is empty —
+    // First notes page carries a pager cursor; the resumed page is empty —
     // a stub that ALWAYS returns the pager would loop the sweep forever.
-    let tasksCalls = 0;
+    let notesCalls = 0;
     const client = stubClient({});
     const base = client.request.bind(client);
     client.request = (async <T>(m: 'GET' | 'POST', pathname: string): Promise<T> => {
-      if (pathname.includes('/objects/tasks?') && pathname.includes('archived=true')) {
+      if (pathname.includes('/objects/notes?') && pathname.includes('archived=true')) {
         client.requestCount += 1;
         client.calls.push(pathname);
-        tasksCalls += 1;
-        return (tasksCalls === 1
-          ? { results: [{ id: 't1', properties: {} }], paging: { next: { after: 'T2' } } }
+        notesCalls += 1;
+        return (notesCalls === 1
+          ? { results: [{ id: 'n1', properties: {} }], paging: { next: { after: 'T2' } } }
           : { results: [] }) as T;
       }
       return base(m, pathname) as Promise<T>;
     }) as typeof client.request;
-    // start mid-rotation at tasks
-    const batches = await drain(delta(client as never, session, liveCursor({ step: 'tasks', after: null }), ctx));
+    // start mid-rotation at notes
+    const batches = await drain(delta(client as never, session, liveCursor({ step: 'notes', after: null }), ctx));
     const sweepCalls = client.calls.filter((c) => c.includes('archived=true'));
-    expect(sweepCalls[0]).toContain('/crm/v3/objects/tasks?');
-    // t1 deleted, then the pager cursor was carried into the batch cursor at least once
+    expect(sweepCalls[0]).toContain('/crm/v3/objects/notes?');
+    // n1 deleted, then the pager cursor was carried into the batch cursor at least once
     const carried = batches.some((b) => {
       const c = b.cursor as Extract<HubSpotCursor, { phase: 'live' }>;
-      return c.archiveSweep?.step === 'tasks' && c.archiveSweep.after === 'T2';
+      return c.archiveSweep?.step === 'notes' && c.archiveSweep.after === 'T2';
     });
     expect(carried).toBe(true);
   });
@@ -112,25 +114,22 @@ describe('archivedSweep', () => {
 
   it('skips a type HubSpot cannot list archived, sweeps the rest and completes the pass', async () => {
     const client = failingClient('meetings', unsupported(), {
-      tasks: { results: [{ id: 't1', properties: {} }] },
       emails: { results: [{ id: 'e1', properties: {} }] },
     });
     const batches = await drain(delta(client as never, session, liveCursor({ step: 'meetings', after: null }), ctx));
     const sweepCalls = client.calls.filter((c) => c.includes('archived=true'));
     expect(sweepCalls.filter((c) => c.includes('/objects/meetings?'))).toHaveLength(1);
-    expect(sweepCalls.some((c) => c.includes('/objects/tasks?'))).toBe(true);
     expect(sweepCalls.some((c) => c.includes('/objects/emails?'))).toBe(true);
     const dels = batches.flatMap((b) => b.deletions ?? []);
-    expect(dels).toContainEqual({ externalId: 't1', type: 'hubspot.task' });
     expect(dels).toContainEqual({ externalId: 'e1', type: 'hubspot.email' });
     // The skip itself persists the next type, so a budget cut right after
     // it never resumes on the unsupported type again.
-    expect(batches.map(sweepCursor)).toContainEqual({ step: 'tasks', after: null });
+    expect(batches.map(sweepCursor)).toContainEqual({ step: 'emails', after: null });
     expect(sweepCursor(batches[batches.length - 1])).toBeUndefined();
   });
 
   it('ends the pass when the unsupported type is the last one swept', async () => {
-    const last = ALL_TYPES[ALL_TYPES.length - 1];
+    const last = INCREMENTAL_TYPES[INCREMENTAL_TYPES.length - 1];
     const client = failingClient(last, unsupported());
     const batches = await drain(delta(client as never, session, liveCursor({ step: last, after: null }), ctx));
     expect(sweepCursor(batches[batches.length - 1])).toBeUndefined();
@@ -139,9 +138,9 @@ describe('archivedSweep', () => {
   it('drops the pager when skipping mid-type, so the next type starts from its first page', async () => {
     const client = failingClient('meetings', unsupported());
     await drain(delta(client as never, session, liveCursor({ step: 'meetings', after: 'M9' }), ctx));
-    const tasksCall = client.calls.find((c) => c.includes('/objects/tasks?') && c.includes('archived=true'));
-    expect(tasksCall).toBeDefined();
-    expect(tasksCall).not.toContain('after=');
+    const emailsCall = client.calls.find((c) => c.includes('/objects/emails?') && c.includes('archived=true'));
+    expect(emailsCall).toBeDefined();
+    expect(emailsCall).not.toContain('after=');
   });
 
   it('still fails the sync on any other validation error', async () => {
